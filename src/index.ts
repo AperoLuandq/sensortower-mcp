@@ -3,10 +3,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
 import { config } from "dotenv";
 import { SensorTowerClient } from "./sensortower-client.js";
 import { registerTools } from "./tools.js";
+import { randomUUID } from "crypto";
 
 config();
 
@@ -39,29 +41,28 @@ async function runStdio() {
   console.error("SensorTower MCP server running on stdio");
 }
 
-async function runSSE() {
+async function runHTTP() {
   const app = express();
   app.use(express.json());
 
-  const sessions = new Map<string, SSEServerTransport>();
+  // --- SSE transport ---
+  const sseSessions = new Map<string, SSEServerTransport>();
 
-  // SSE endpoint - client connects here to establish the stream
   app.get("/sse", async (req, res) => {
     const transport = new SSEServerTransport("/messages", res);
-    sessions.set(transport.sessionId, transport);
+    sseSessions.set(transport.sessionId, transport);
 
     transport.onclose = () => {
-      sessions.delete(transport.sessionId);
+      sseSessions.delete(transport.sessionId);
     };
 
     const server = createServer();
     await server.connect(transport);
   });
 
-  // Messages endpoint - client sends JSON-RPC messages here
   app.post("/messages", async (req, res) => {
     const sessionId = req.query.sessionId as string;
-    const transport = sessions.get(sessionId);
+    const transport = sseSessions.get(sessionId);
     if (!transport) {
       res.status(400).json({ error: "Invalid or missing session ID" });
       return;
@@ -69,18 +70,71 @@ async function runSSE() {
     await transport.handlePostMessage(req, res, req.body);
   });
 
+  // --- Streamable HTTP transport ---
+  const httpSessions = new Map<string, StreamableHTTPServerTransport>();
+
+  app.post("/mcp", async (req, res) => {
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+    if (sessionId && httpSessions.has(sessionId)) {
+      const transport = httpSessions.get(sessionId)!;
+      await transport.handleRequest(req, res, req.body);
+      return;
+    }
+
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+    });
+
+    transport.onclose = () => {
+      const sid = transport.sessionId;
+      if (sid) httpSessions.delete(sid);
+    };
+
+    const server = createServer();
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+
+    if (transport.sessionId) {
+      httpSessions.set(transport.sessionId, transport);
+    }
+  });
+
+  app.get("/mcp", async (req, res) => {
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    if (!sessionId || !httpSessions.has(sessionId)) {
+      res.status(400).json({ error: "Invalid or missing session ID" });
+      return;
+    }
+    await httpSessions.get(sessionId)!.handleRequest(req, res);
+  });
+
+  app.delete("/mcp", async (req, res) => {
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    if (!sessionId || !httpSessions.has(sessionId)) {
+      res.status(400).json({ error: "Invalid or missing session ID" });
+      return;
+    }
+    const transport = httpSessions.get(sessionId)!;
+    await transport.handleRequest(req, res);
+    httpSessions.delete(sessionId);
+  });
+
+  // --- Health ---
   app.get("/health", (_req, res) => {
-    res.json({ status: "ok", transport: "sse" });
+    res.json({ status: "ok", transports: ["sse", "streamable-http"] });
   });
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.error(`SensorTower MCP server running on http://0.0.0.0:${PORT}/sse`);
+    console.error(`SensorTower MCP server running on http://0.0.0.0:${PORT}`);
+    console.error(`  SSE:             GET  /sse`);
+    console.error(`  Streamable HTTP: POST /mcp`);
   });
 }
 
 async function main() {
   if (TRANSPORT === "http") {
-    await runSSE();
+    await runHTTP();
   } else {
     await runStdio();
   }
