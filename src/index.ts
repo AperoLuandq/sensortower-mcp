@@ -2,12 +2,11 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import express from "express";
 import { config } from "dotenv";
 import { SensorTowerClient } from "./sensortower-client.js";
 import { registerTools } from "./tools.js";
-import { randomUUID } from "crypto";
 
 config();
 
@@ -40,73 +39,49 @@ async function runStdio() {
   console.error("SensorTower MCP server running on stdio");
 }
 
-async function runHTTP() {
+async function runSSE() {
   const app = express();
   app.use(express.json());
 
-  const transports = new Map<string, StreamableHTTPServerTransport>();
+  const sessions = new Map<string, SSEServerTransport>();
 
-  app.post("/mcp", async (req, res) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-    if (sessionId && transports.has(sessionId)) {
-      const transport = transports.get(sessionId)!;
-      await transport.handleRequest(req, res, req.body);
-      return;
-    }
-
-    // New session
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-    });
+  // SSE endpoint - client connects here to establish the stream
+  app.get("/sse", async (req, res) => {
+    const transport = new SSEServerTransport("/messages", res);
+    sessions.set(transport.sessionId, transport);
 
     transport.onclose = () => {
-      const sid = transport.sessionId;
-      if (sid) transports.delete(sid);
+      sessions.delete(transport.sessionId);
     };
 
     const server = createServer();
     await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
-
-    if (transport.sessionId) {
-      transports.set(transport.sessionId, transport);
-    }
+    await transport.start();
   });
 
-  app.get("/mcp", async (req, res) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    if (!sessionId || !transports.has(sessionId)) {
+  // Messages endpoint - client sends JSON-RPC messages here
+  app.post("/messages", async (req, res) => {
+    const sessionId = req.query.sessionId as string;
+    const transport = sessions.get(sessionId);
+    if (!transport) {
       res.status(400).json({ error: "Invalid or missing session ID" });
       return;
     }
-    const transport = transports.get(sessionId)!;
-    await transport.handleRequest(req, res);
-  });
-
-  app.delete("/mcp", async (req, res) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    if (!sessionId || !transports.has(sessionId)) {
-      res.status(400).json({ error: "Invalid or missing session ID" });
-      return;
-    }
-    const transport = transports.get(sessionId)!;
-    await transport.handleRequest(req, res);
-    transports.delete(sessionId);
+    await transport.handlePostMessage(req, res, req.body);
   });
 
   app.get("/health", (_req, res) => {
-    res.json({ status: "ok", transport: "streamable-http" });
+    res.json({ status: "ok", transport: "sse" });
   });
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.error(`SensorTower MCP server running on http://0.0.0.0:${PORT}/mcp`);
+    console.error(`SensorTower MCP server running on http://0.0.0.0:${PORT}/sse`);
   });
 }
 
 async function main() {
   if (TRANSPORT === "http") {
-    await runHTTP();
+    await runSSE();
   } else {
     await runStdio();
   }
