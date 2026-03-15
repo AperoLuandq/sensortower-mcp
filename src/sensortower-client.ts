@@ -43,13 +43,23 @@ export class SensorTowerClient {
 
     const response = await fetch(url.toString(), opts);
 
+    const text = await response.text();
+
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(
-        `SensorTower API error ${response.status}: ${errorText}`
-      );
+      // Try to parse error as JSON for cleaner messages
+      try {
+        const errorJson = JSON.parse(text);
+        throw new Error(
+          `SensorTower API error ${response.status}: ${JSON.stringify(errorJson)}`
+        );
+      } catch (e) {
+        if (e instanceof SyntaxError) {
+          throw new Error(`SensorTower API error ${response.status}: ${text}`);
+        }
+        throw e;
+      }
     }
 
-    return response.json();
+    return JSON.parse(text);
   }
 }
