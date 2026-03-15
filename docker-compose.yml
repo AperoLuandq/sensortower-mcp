@@ -1,0 +1,10 @@
+services:
+  sensortower-mcp:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - SENSORTOWER_API_KEY=${SENSORTOWER_API_KEY}
+      - MCP_TRANSPORT=http
+      - PORT=3000
+    restart: unless-stopped
