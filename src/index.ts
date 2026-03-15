@@ -67,12 +67,11 @@ async function runHTTP() {
 
     const server = createServer();
     await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
 
     if (transport.sessionId) {
       transports.set(transport.sessionId, transport);
     }
-
-    await transport.handleRequest(req, res, req.body);
   });
 
   app.get("/mcp", async (req, res) => {
