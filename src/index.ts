@@ -56,7 +56,6 @@ async function runSSE() {
 
     const server = createServer();
     await server.connect(transport);
-    await transport.start();
   });
 
   // Messages endpoint - client sends JSON-RPC messages here
