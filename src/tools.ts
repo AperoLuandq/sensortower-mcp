@@ -15,18 +15,16 @@ export function registerTools(
   // 1. Search entities (apps/publishers)
   server.tool(
     "search_apps",
-    `Search for apps or publishers by name. This is typically the FIRST step in any workflow — use it to find app_ids needed by other tools.
+    `Search for apps or publishers by name. This is the ENTRY POINT for most workflows — use it first to find app_ids needed by other tools.
 
-Returns: matching apps/publishers with their IDs and basic info.
+Returns array of objects: { app_id, name, publisher_name, publisher_id, humanized_name, icon_url, os, categories, global_rating_count, release_date, updated_date, active, valid_countries }.
 
 Important: os defaults to "unified", which returns unified IDs. Most other tools require platform-specific IDs (ios/android). Either set os to "ios" or "android" when searching, or use get_unified_apps afterward to convert unified IDs to platform-specific ones.
 
-Use cases:
-- Find app IDs before calling get_app_details, get_sales_estimates, etc.
-- Search for publishers to get their publisher_id for get_publisher_apps
-- Quick lookup to verify app names and platforms
+Workflow: search_apps → get app_id → pass to get_app_details, get_sales_estimates, get_reviews, etc.
+Use entity_type="publisher" to find publisher_id for get_publisher_apps.
 
-Example: search "TikTok" with os="ios" → returns iOS app_id that you pass to get_sales_estimates`,
+Use when: "Find app X", "Look up app ID for Y", "Search for apps like Z", or as a first step before any app-specific analysis.`,
     {
       term: z.string().describe("Search term (min 3 Latin chars or 2 non-Latin)"),
       os: osEnum.default("unified"),
@@ -46,12 +44,14 @@ Example: search "TikTok" with os="ios" → returns iOS app_id that you pass to g
   // 2. Get app details
   server.tool(
     "get_app_details",
-    `Get detailed metadata for one or more apps. Returns: name, publisher, icon, description, categories, current rating, rating count, release date, last update, price, content rating, and platform-specific details.
+    `Get detailed metadata for one or more apps. Accepts up to 100 comma-separated app_ids per call.
 
-Accepts up to 100 comma-separated app_ids per call. Requires platform-specific IDs (ios or android).
+Returns { apps: [{ app_id, name, publisher_name, publisher_id, icon_url, os, url, categories, release_date, updated_date, rating, price, global_rating_count, rating_count, version, in_app_purchases, humanized_worldwide_last_month_downloads, humanized_worldwide_last_month_revenue, bundle_id, support_url, website_url, privacy_policy_url, publisher_country, content_rating, unified_app_id, description, subtitle, screenshot_urls, supported_languages }] }
+
+Requires platform-specific IDs (ios or android).
 Prerequisite: Use search_apps first to find app_ids. If search_apps returns unified IDs, use get_unified_apps to convert to platform-specific IDs first.
 
-Use when: user asks "tell me about this app", "what category is X", "when was X last updated", or needs basic app info before deeper analysis.`,
+Use when: "tell me about this app", "what category is X", "when was X last updated", "show me X's screenshots", or need comprehensive app metadata.`,
     {
       app_ids: z.string().describe("Comma-separated app IDs (max 100)"),
       os: platformEnum.describe("Platform: ios or android"),
@@ -65,12 +65,13 @@ Use when: user asks "tell me about this app", "what category is X", "when was X 
   // 3. Sales report estimates (downloads & revenue)
   server.tool(
     "get_sales_estimates",
-    `Get estimated downloads and revenue for apps, broken down by country and time period. These are Sensor Tower's modeled estimates, not official reported figures.
+    `Get estimated downloads and revenue for apps, broken down by country and time period. These are Sensor Tower modeled estimates, not official figures.
 
-Returns: time series of download counts and revenue amounts per app per country.
-Supports daily/weekly/monthly/quarterly granularity. Use "WW" for worldwide aggregated data.
+Returns array of objects: { aid (app_id), cc (country_code), d (date), au (android_units/downloads), ar (android_revenue), iu (ios_units/downloads), ir (ios_revenue) }. Revenue values are in the smallest currency unit (e.g. cents for USD — divide by 100 for dollars).
 
-Use when: "how many downloads does X have", "what's X revenue", "compare downloads between App A and App B", or needs market sizing data.`,
+Supports daily/weekly/monthly/quarterly granularity. Use "WW" for countries param to get worldwide data.
+
+Use when: "How many downloads does X have?", "What's X's monthly revenue?", "Compare downloads between App A and B", "Revenue trend over time".`,
     {
       app_ids: z.string().describe("Comma-separated app IDs"),
       os: platformEnum,
@@ -94,15 +95,16 @@ Use when: "how many downloads does X have", "what's X revenue", "compare downloa
   // 4. Top ranking apps
   server.tool(
     "get_top_apps",
-    `Get the app store top charts (ranking list) for a specific category, chart type, country, and date. Mirrors what users see in the App Store / Play Store rankings.
+    `Get the App Store / Play Store top chart rankings for a specific category, chart type, country, and date. Returns the same rankings users see in the store.
 
-Common category IDs: 36=All, 6014=Games, 6018=Books, 6015=Finance, 6017=Health & Fitness, 6016=Lifestyle, 6005=Social Networking.
-Chart types: topfreeapplications (free), toppaidapplications (paid), topgrossingapplications (top grossing), topfreeipadapplications (iPad free, iOS only).
+Returns { category, chart_type, country, date, ranking: [app_id, app_id, ...] } — an ordered array of app IDs by rank position. You'll need to call get_app_details separately to get app names/metadata.
 
-Returns: ordered list of apps with ranking data.
+Common iOS category IDs: 36=All, 6014=Games, 6017=Education, 6018=Books, 6015=Finance, 6016=Lifestyle, 6005=Social Networking, 6007=Productivity, 6002=Utilities, 6008=Photo & Video.
+Chart types: topfreeapplications, toppaidapplications, topgrossingapplications, topfreeipadapplications (iOS only).
 
-Use when: "What are the top free games in the US?", "Show me top grossing apps", "What's #1 in the App Store right now?"
-Prefer get_top_apps_comparison when user wants volume-based rankings with growth data instead of store chart rankings.`,
+DIFFERENT from get_top_apps_comparison: This returns store chart rankings (position-based). Use get_top_apps_comparison for volume-based rankings with growth metrics.
+
+Use when: "What's #1 in the App Store?", "Top free games in US", "Show me the top grossing apps".`,
     {
       os: platformEnum,
       category: z.string().describe("Category ID (e.g. 6014 for Games, 6018 for Books, 36 for All)"),
@@ -126,14 +128,14 @@ Prefer get_top_apps_comparison when user wants volume-based rankings with growth
   // 5. Category ranking history
   server.tool(
     "get_category_ranking_history",
-    `Track how an app's category ranking has changed over time. Returns a time series of ranking positions within a specific category and chart type.
+    `Track how an app's position in category rankings has changed over time. Returns daily ranking positions within a specific category chart.
 
-Useful for: monitoring rank trends, detecting rank spikes from marketing campaigns, comparing competitive positioning over time.
+Note: Both category and chart_type may be required for successful requests. If the API returns error 400, verify that a valid category ID is provided. category param is optional in schema but recommended to always provide.
 
-Prerequisite: Need app_id (from search_apps). category is optional — if omitted, uses the app's primary category.
-Common category IDs: 36=All, 6014=Games, 6018=Books, 6015=Finance.
+Prerequisite: Need app_id from search_apps.
+Common iOS category IDs: 36=All, 6014=Games, 6017=Education, 6018=Books, 6015=Finance.
 
-Use when: "How has TikTok's ranking changed?", "Show me rank history for X", "Did the app's ranking improve after the update?"`,
+Use when: "How has X's ranking changed?", "Show rank history for X", "Did the ranking improve after the campaign?", competitive rank monitoring.`,
     {
       app_id: z.string().describe("App ID"),
       os: platformEnum,
@@ -159,20 +161,18 @@ Use when: "How has TikTok's ranking changed?", "Show me rank history for X", "Di
   // 6. Top apps comparison (downloads/revenue leaderboard)
   server.tool(
     "get_top_apps_comparison",
-    `Get top apps ranked by absolute downloads/revenue WITH growth comparison metrics. Unlike get_top_apps (which shows store chart rankings), this tool ranks by actual estimated download/revenue volume and includes period-over-period growth data.
+    `Get top apps ranked by absolute download/revenue volume WITH period-over-period growth comparison. Unlike get_top_apps (store chart positions), this ranks by actual estimated volumes.
 
-comparison_attribute controls the sort:
-- "absolute": rank by total downloads/revenue in the period
-- "delta": rank by numeric change vs previous period
-- "percent": rank by percentage growth vs previous period
+Returns array of objects: { app_id, date, current_units_value, units_absolute, comparison_units_value, units_delta, units_transformed_delta (% change), current_revenue_value, revenue_absolute, comparison_revenue_value, revenue_delta, revenue_transformed_delta (% change), custom_tags: { extensive metadata including retention, demographics, DAU/MAU, download sources, SDK info } }
 
-device_type: filter by "iphone", "ipad", or "total" (default). Only meaningful when os is "ios" — ignored for Android.
+comparison_attribute controls sorting: "absolute" = rank by total volume, "delta" = by numeric change, "percent" = by growth rate.
+measure: "units" = downloads, "revenue" = revenue.
+device_type: "iphone", "ipad", or "total" (default). Only meaningful when os is "ios" — ignored for Android.
 category: use "0" for all categories (unlike get_top_apps which uses "36" for All).
 
-Returns: app list with download/revenue numbers AND growth metrics.
+DIFFERENT from get_top_apps: This returns volume data + growth. Use get_top_apps for store chart rankings.
 
-Use when: "Which apps grew fastest this month?", "Top apps by revenue with growth", "What apps had the biggest download increase?"
-Prefer get_top_apps when user wants store chart rankings.`,
+Use when: "Which apps grew fastest?", "Top apps by revenue with growth data", "Market leaders by downloads", "Competitive landscape with metrics".`,
     {
       os: platformEnum,
       date: dateStr.describe("Reference date (YYYY-MM-DD)"),
@@ -202,13 +202,15 @@ Prefer get_top_apps when user wants store chart rankings.`,
   // 7. App reviews
   server.tool(
     "get_reviews",
-    `Get user reviews for an app, including review text, star rating, app version, author name, and review date. Supports filtering by country, date range, and star rating.
+    `Get individual user reviews for an app with full text, ratings, sentiment analysis, and version info. Supports filtering by country, date range, and star rating.
 
-Returns reviews sorted by most recent first. Use pagination (offset) for more results. Default 50, max 200 reviews per call.
+Returns { feedback: [{ id, date, rating (1-5), country, username, title, version, tags, content, parsed_content, sentiment ("happy"/"mixed"/"sad"), detected_language, app_id }], page_count, total_count, rating_breakdown: [1star, 2star, 3star, 4star, 5star counts] }
 
-Different from get_ratings: this returns individual review texts, while get_ratings gives aggregate rating stats.
+Sorted by most recent first. Default 50, max 200 per call. Use offset for pagination.
 
-Use when: "What are users saying about X?", "Show me 1-star reviews", "What complaints do users have about the latest version?"`,
+DIFFERENT from get_ratings: This returns individual review texts with sentiment. get_ratings gives aggregate rating stats only.
+
+Use when: "What are users saying about X?", "Show me 1-star reviews", "Sentiment analysis of user feedback", "What complaints about latest version?".`,
     {
       app_id: z.string().describe("App ID"),
       os: platformEnum,
@@ -236,13 +238,13 @@ Use when: "What are users saying about X?", "Show me 1-star reviews", "What comp
   // 8. Ratings history
   server.tool(
     "get_ratings",
-    `Get the star rating distribution (1 through 5 star counts) and average rating for an app.
+    `Get the star rating distribution and average rating for an app. Shows cumulative rating breakdown as of the latest available date.
 
-Returns: count of reviews per star level (1-5), total review count, average rating.
+Returns array: [{ app_id, country, date, breakdown: [1star_count, 2star_count, 3star_count, 4star_count, 5star_count], average, total, current_version_breakdown: [same format] }]
 
-Different from get_reviews: this gives aggregate rating stats, while get_reviews returns individual review texts.
+DIFFERENT from get_reviews: This gives aggregate rating stats. get_reviews returns individual review texts with sentiment.
 
-Use when: "What's the rating breakdown for X?", "How many 5-star reviews does X have?", "Compare average ratings between App A and App B"`,
+Use when: "What's the rating breakdown?", "How many 5-star reviews?", "Compare average ratings between apps", "Rating distribution analysis".`,
     {
       app_id: z.string().describe("App ID"),
       os: platformEnum,
@@ -260,15 +262,17 @@ Use when: "What's the rating breakdown for X?", "How many 5-star reviews does X 
   // 9. Active users (usage intelligence)
   server.tool(
     "get_active_users",
-    `Get estimated active user counts (DAU/WAU/MAU) for apps over a date range. These are Sensor Tower's modeled estimates based on panel data.
+    `Get estimated active user counts (DAU/WAU/MAU) for apps over a date range. Sensor Tower modeled estimates based on panel data.
+
+Returns array: [{ app_id, country, date, ipad_users, iphone_users }]. Total active users = ipad_users + iphone_users. Note: response fields are iOS-specific; Android responses may use different field names.
 
 Key parameters:
-- time_period: defines the metric — "day"=DAU, "week"=WAU, "month"=MAU
+- time_period: "day" = DAU, "week" = WAU, "month" = MAU (defines the metric)
 - date_granularity: how data points are spaced (daily/weekly/monthly/quarterly)
 
-Returns: time series of active user counts per app per country.
+Use "WW" for worldwide. Combine with get_sales_estimates for downloads-to-users conversion analysis.
 
-Use when: "How many daily active users does X have?", "What's X's MAU?", "Compare user engagement between App A and App B"`,
+Use when: "How many daily active users?", "What's X's MAU?", "User engagement trends", "DAU/MAU ratio analysis".`,
     {
       app_ids: z.string().describe("Comma-separated app IDs"),
       os: platformEnum,
@@ -294,14 +298,14 @@ Use when: "How many daily active users does X have?", "What's X's MAU?", "Compar
   // 10. Retention
   server.tool(
     "get_retention",
-    `Get user retention rates (percentage of users who return after install) for apps. These are Sensor Tower estimates based on panel data.
+    `Get user retention rates for apps — the percentage of new users who return N days after install. Returns D0 through D89 (90 data points). Sensor Tower estimates based on panel data.
 
-Retention = % of new users who open the app again N days after first install.
+Returns { app_data: [{ date_granularity, app_id, country, date, corrected_retention: [float array — index 0 = D0, index 1 = D1, ..., index 89 = D89], confidence }], baseline_data: [float array — category average for comparison], disabled_app_ids }
+
+Values are decimals (0.52 = 52%). baseline_data provides category-average retention for benchmarking.
 Supports "all_time" (single aggregate) or "quarterly" date_granularity.
 
-Returns: retention percentages per app.
-
-Use when: "What's the D1 retention for X?", "How sticky is this app?", "Compare retention rates between competitors"`,
+Use when: "What's D1 retention?", "How sticky is this app?", "Compare retention vs category average", "Retention curve analysis".`,
     {
       app_ids: z.string().describe("Comma-separated app IDs"),
       os: platformEnum,
@@ -325,11 +329,13 @@ Use when: "What's the D1 retention for X?", "How sticky is this app?", "Compare 
   // 11. Demographics
   server.tool(
     "get_demographics",
-    `Get estimated user demographics for apps, broken down by age group and gender. Based on Sensor Tower's panel data modeling.
+    `Get estimated user demographics broken down by age group and gender. Based on Sensor Tower panel data modeling.
 
-Returns: percentage breakdown by age brackets (e.g., 18-24, 25-34, 35-44, 45-54, 55+) and gender (male/female) for each app.
+Returns { app_data: [{ app_id, average_age_total, confidence, country, female (ratio), male (ratio), normalized_demographics: { female_18, female_25, female_35, female_45, female_55, male_18, male_25, male_35, male_45, male_55 } }], baseline_data: { same keys — category averages } }
 
-Use when: "Who uses this app?", "What's the age breakdown of X's users?", "Is App X more popular with men or women?", targeting analysis.`,
+Age brackets: 18 = 18-24, 25 = 25-34, 35 = 35-44, 45 = 45-54, 55 = 55+. Values are ratios (0.17 = 17%).
+
+Use when: "Who uses this app?", "Age/gender breakdown", "Is it more popular with men or women?", "Target audience analysis", "Compare demographics vs category".`,
     {
       app_ids: z.string().describe("Comma-separated app IDs"),
       os: platformEnum,
@@ -351,11 +357,14 @@ Use when: "Who uses this app?", "What's the age breakdown of X's users?", "Is Ap
   // 12. Keyword research
   server.tool(
     "research_keyword",
-    `Research an App Store Optimization (ASO) keyword: get search volume/traffic score, keyword difficulty score, and the list of apps currently ranking for that keyword.
+    `Research an ASO (App Store Optimization) keyword: get search volume, difficulty score, and top-ranking apps for that keyword.
 
-Returns: traffic score (relative search volume), difficulty score (competition level), and top-ranking apps for the keyword in the specified country.
+Returns { keyword: { related_queries: [string], term, traffic (1-10 score), phone_apps: { app_list, app_list_size, difficulty (1-10), rank_top_10_likelihood }, tablet_apps: { same structure } } }
 
-Use when: "How competitive is the keyword 'photo editor'?", "What apps rank for X?", "Is this keyword worth targeting for ASO?", keyword research for app marketing.`,
+traffic score: 1 = very low search volume, 10 = very high.
+difficulty score: 1 = easy to rank, 10 = very competitive.
+
+Use when: "How competitive is keyword X?", "What apps rank for this term?", "Is this keyword worth targeting?", "ASO keyword research", "Find related keywords".`,
     {
       term: z.string().describe("Keyword to research"),
       os: platformEnum,
@@ -373,12 +382,14 @@ Use when: "How competitive is the keyword 'photo editor'?", "What apps rank for 
   // 13. App keywords
   server.tool(
     "get_app_keywords",
-    `Get all keywords that an app currently ranks for in App Store / Play Store search, along with the app's ranking position and each keyword's traffic score.
+    `Get all keywords that an app currently ranks for in App Store / Play Store search results, along with ranking position per keyword.
 
-Useful for ASO analysis: understanding what search terms drive discovery for an app.
+Returns { app: { full app metadata }, keywords: [{ term, rank }] }
+
+Each keyword entry shows the search term and the app's current rank position for it.
 Combine with research_keyword for deeper analysis on specific terms.
 
-Use when: "What keywords does X rank for?", "Show me X's ASO keyword profile", "Find keyword opportunities by analyzing competitor keywords"`,
+Use when: "What keywords does X rank for?", "ASO keyword profile", "Find keyword opportunities from competitors", "Which search terms drive discovery?".`,
     {
       app_id: z.string().describe("App ID"),
       os: platformEnum,
@@ -396,11 +407,12 @@ Use when: "What keywords does X rank for?", "Show me X's ASO keyword profile", "
   // 14. Trending searches (iOS only)
   server.tool(
     "get_trending_searches",
-    `Get currently trending search terms on the iOS App Store (iOS ONLY — not available for Android). Shows what users are actively searching for right now.
+    `Get currently trending search terms on the iOS App Store. iOS ONLY — not available for Android.
 
-Returns: list of trending keywords with their current rank/position.
+Returns a simple array of strings: ["term1", "term2", "term3", ...] — trending keywords ordered by popularity.
 
-Use when: "What's trending on the App Store?", "What are people searching for?", "Find trending topics for app marketing inspiration"
+Use when: "What's trending on the App Store?", "What are people searching for right now?", "Trending topics for app marketing", "Content inspiration from search trends".
+
 Note: iOS only — no Android equivalent for trending searches.`,
     {
       country: z.string().default("US").describe("Country code"),
@@ -416,14 +428,14 @@ Note: iOS only — no Android equivalent for trending searches.`,
   // 15. Ad intelligence - creatives
   server.tool(
     "get_ad_creatives",
-    `Get advertising creatives (display, video, playable ads) used by apps, along with Share of Voice (SOV) metrics. SOV = relative proportion of ad impressions vs competitors.
+    `Get advertising creatives (display, video, playable ads) used by apps, along with Share of Voice (SOV) metrics showing relative ad impression share.
 
-Requires Ad Intelligence plan — will fail without it. Recommended max 5 app_ids per call.
+Requires Ad Intelligence plan — will return error without it. Recommended max 5 app_ids per call.
 
-Returns: ad creative details (type, preview), SOV data, and ad network info.
+Returns ad creative details including type, preview URLs, SOV data, and ad network placement info.
 Combine with get_ad_network_analysis for complete competitive ad intelligence.
 
-Use when: "What ads is X running?", "Show me competitor ad creatives", "What's X's share of voice?", competitive ad intelligence research.`,
+Use when: "What ads is X running?", "Show competitor ad creatives", "What's X's share of voice?", "Competitive ad intelligence".`,
     {
       app_ids: z.string().describe("Comma-separated app IDs (max 5)"),
       os: platformEnum,
@@ -449,14 +461,14 @@ Use when: "What ads is X running?", "Show me competitor ad creatives", "What's X
   // 16. Ad intelligence - network analysis (SOV)
   server.tool(
     "get_ad_network_analysis",
-    `Get Share of Voice (SOV) trends over time, broken down by ad network (Facebook, Google Ads, Unity, AppLovin, etc.). Shows how an app's advertising presence changes across different networks.
+    `Get Share of Voice (SOV) trends over time, broken down by ad network (Facebook Ads, Google Ads, Unity, AppLovin, etc.). Shows how an app's advertising presence shifts across networks.
 
-Requires Ad Intelligence plan — will fail without it. Recommended max 5 app_ids per call.
+Requires Ad Intelligence plan — will return error without it. Recommended max 5 app_ids per call.
 
-Returns: time series of SOV percentages per ad network per app.
+Returns time series of SOV percentages per ad network per app at the specified granularity.
 Combine with get_ad_creatives for complete competitive ad intelligence.
 
-Use when: "Which ad networks does X use?", "How has X's ad spend shifted over time?", "Compare ad strategies between competitors across networks"`,
+Use when: "Which ad networks does X use?", "How has ad strategy shifted?", "Compare ad spend across networks", "Ad network diversification analysis".`,
     {
       app_ids: z.string().describe("Comma-separated app IDs (max 5)"),
       os: platformEnum,
@@ -480,13 +492,16 @@ Use when: "Which ad networks does X use?", "How has X's ad spend shifted over ti
   // 17. Top publishers
   server.tool(
     "get_top_publishers",
-    `Get top app publishers (companies/developers) ranked by total downloads or revenue across all their apps, with growth metrics.
+    `Get top app publishers (companies/developers) ranked by total downloads or revenue across ALL their apps, with growth metrics.
 
-Returns: publisher name, publisher_id, total downloads/revenue, growth numbers.
-Different from get_top_apps_comparison (which ranks individual apps).
-Use publisher_id with get_publisher_apps to see all apps from a publisher.
+Returns array: [{ publisher_id, publisher_name, date, units_absolute, units_delta, revenue_absolute, revenue_delta, apps: [{ app_id, publisher_id, units_absolute, units_delta, units_transformed_delta, revenue_absolute, revenue_delta, revenue_transformed_delta, custom_tags, name, icon_url, os }], units_transformed_delta, revenue_transformed_delta }]
 
-Use when: "Who are the biggest app publishers?", "Top gaming companies by revenue", "Which publishers grew fastest this quarter?"`,
+Each publisher entry includes their top apps with individual metrics.
+Use publisher_id with get_publisher_apps for the full app portfolio.
+
+DIFFERENT from get_top_apps_comparison: This ranks publishers (companies), not individual apps.
+
+Use when: "Who are the biggest publishers?", "Top gaming companies by revenue", "Which publishers grew fastest?", "Publisher portfolio analysis".`,
     {
       os: platformEnum,
       date: dateStr.describe("Reference date (YYYY-MM-DD)"),
@@ -512,13 +527,13 @@ Use when: "Who are the biggest app publishers?", "Top gaming companies by revenu
   // 18. Publisher apps
   server.tool(
     "get_publisher_apps",
-    `Get the complete list of apps published by a specific publisher/developer.
+    `Get the complete list of apps published by a specific publisher/developer on a given platform. Includes both active and inactive (removed) apps.
+
+Returns array of full app objects: [{ app_id, name, publisher_name, publisher_id, icon_url, os, active, url, categories, rating, price, global_rating_count, version, humanized_worldwide_last_month_downloads, humanized_worldwide_last_month_revenue, bundle_id }]
 
 Prerequisite: Need publisher_id — get it from search_apps (entity_type: "publisher") or from get_top_publishers results.
 
-Returns: list of all apps with app_id, name, category, and basic metrics.
-
-Use when: "What apps does Company X publish?", "Show me all games from Publisher Y", "How many apps does this developer have?"`,
+Use when: "What apps does Company X publish?", "Show all games from Publisher Y", "Publisher portfolio analysis", "How many apps does this developer have?".`,
     {
       publisher_id: z.string().describe("Publisher ID"),
       os: platformEnum,
@@ -534,11 +549,11 @@ Use when: "What apps does Company X publish?", "Show me all games from Publisher
   // 19. Featured apps
   server.tool(
     "get_featured_apps",
-    `Get apps that are currently or were recently featured (editor's choice, app of the day, etc.) on App Store or Play Store.
+    `Get apps that are currently or were recently featured (Editor's Choice, App of the Day, etc.) on App Store or Play Store.
 
-Returns: featured apps with featuring type, dates, and placement details.
+Returns featured apps with featuring details. Optional date range filters for historical featuring data.
 
-Use when: "Which apps are featured right now?", "Was X ever featured on the App Store?", "Show me recently featured apps in the US"`,
+Use when: "Which apps are featured right now?", "Was X ever featured?", "Recently featured apps in US", "Feature placement tracking".`,
     {
       os: platformEnum,
       country: z.string().default("US").describe("Country code"),
@@ -558,12 +573,11 @@ Use when: "Which apps are featured right now?", "Was X ever featured on the App 
   // 20. Download sources
   server.tool(
     "get_download_sources",
-    `Get the breakdown of how users discover and download an app: organic (App Store search), paid (ads), browser (web referral), and other sources.
+    `Get the breakdown of how users discover and download an app: organic search, organic browse, paid display, paid search, and browser sources. Shows percentage per source.
 
-Returns: percentage breakdown of download sources per app.
-Useful for understanding user acquisition strategy and marketing ROI.
+Returns { data: [breakdown objects per app] }. May return empty data array if source data is not available for the specified app/period.
 
-Use when: "How do users find this app?", "What % of downloads are organic vs paid?", "Is X relying heavily on paid acquisition?"`,
+Use when: "How do users find this app?", "What % of downloads are organic vs paid?", "User acquisition channel analysis", "Is X relying on paid acquisition?".`,
     {
       app_ids: z.string().describe("Comma-separated app IDs"),
       os: platformEnum,
@@ -585,12 +599,14 @@ Use when: "How do users find this app?", "What % of downloads are organic vs pai
   // 21. Top in-app purchases (iOS)
   server.tool(
     "get_top_iap",
-    `Get the most popular in-app purchases (IAPs) for an iOS app (iOS ONLY). Shows what users are buying inside the app.
+    `Get the most popular in-app purchases (IAPs) for an iOS app. iOS ONLY — not available for Android.
 
-Returns: IAP names, prices, and relative popularity/ranking.
-Note: Only available for iOS apps. Uses iOS App ID (not unified ID).
+Returns { apps: [{ app_id, top_in_app_purchases: [{ iap_id, name, price (string like "$9.99"), duration (ISO 8601 like "P1M" for monthly, "P1Y" for yearly, null for consumables) }] }] }
 
-Use when: "What do users buy in this app?", "What are the top IAPs?", "Analyze monetization strategy of X"`,
+duration field distinguishes subscriptions (P1M, P1Y) from one-time purchases (null).
+Note: Uses iOS App ID (iTunes ID), not unified ID.
+
+Use when: "What do users buy in this app?", "Top IAPs analysis", "Monetization strategy review", "Subscription vs consumable breakdown".`,
     {
       app_id: z.string().describe("iOS App ID"),
     },
@@ -605,14 +621,18 @@ Use when: "What do users buy in this app?", "What are the top IAPs?", "Analyze m
   // 22. Unified app ID mapping
   server.tool(
     "get_unified_apps",
-    `Convert between Sensor Tower's unified app IDs and platform-specific IDs (iTunes/iOS App ID or Android package name). Sensor Tower uses "unified IDs" to represent an app across both platforms as a single entity.
+    `Convert between Sensor Tower's unified app IDs and platform-specific IDs (iTunes/iOS or Android package names). Unified IDs represent an app across both platforms as a single entity.
 
-Use this when:
-- You have a unified ID but need the iOS or Android ID for platform-specific tools
-- You have an iTunes ID and need the unified or Android equivalent
-- You need to link iOS and Android versions of the same app
+Returns { apps: [{ unified_app_id, name, canonical_app_id, cohort_id, itunes_apps: [{ app_id }], android_apps: [{ app_id }], unified_publisher_ids, itunes_publisher_ids, android_publisher_ids }] }
 
-Essential utility tool — many tools require platform-specific IDs while search_apps may return unified IDs.`,
+Essential utility tool for cross-platform analysis:
+- unified → get iOS + Android IDs
+- itunes → get unified + Android equivalent
+- android → get unified + iOS equivalent
+
+Many tools require platform-specific IDs while search_apps may return unified IDs.
+
+Use when: "Link iOS and Android versions of same app", "Convert unified ID to platform-specific", "Cross-platform app matching", "Need Android package name from iOS ID".`,
     {
       app_ids: z.string().describe("Comma-separated app IDs (max 100)"),
       app_id_type: z.enum(["unified", "itunes", "android"]).default("unified").describe("Type of app IDs provided"),
@@ -626,11 +646,13 @@ Essential utility tool — many tools require platform-specific IDs while search
   // 23. Apple Search Ads
   server.tool(
     "get_search_ads_apps",
-    `Get the list of apps currently running Apple Search Ads for a specific keyword (iOS App Store ONLY). Shows which competitors are bidding on a keyword.
+    `Get apps currently running Apple Search Ads for a specific keyword on iOS App Store. Shows which competitors are bidding on a keyword with their Share of Voice. iOS ONLY.
 
-Returns: apps running ads for the keyword with SOV/impression data.
+Returns { apps: [{ app_id, name, publisher_name, icon_url, os, price, rating, release_date, in_app_purchases, rating_count, share_of_voice (0.0-1.0, representing % of ad impressions) }] }
 
-Use when: "Who's advertising on the keyword 'fitness tracker'?", "Is any competitor bidding on our brand keyword?", competitive Apple Search Ads intelligence.`,
+share_of_voice: 0.85 means 85% of ad impressions for this keyword go to this app.
+
+Use when: "Who's advertising on keyword X?", "Competitor Search Ads analysis", "Is anyone bidding on our brand keyword?", "Apple Search Ads competitive intelligence".`,
     {
       term: z.string().describe("Keyword to check"),
       country: z.string().default("US").describe("Country code"),
@@ -647,11 +669,11 @@ Use when: "Who's advertising on the keyword 'fitness tracker'?", "Is any competi
   // 24. API usage
   server.tool(
     "get_api_usage",
-    `Check current API usage and remaining quota for your Sensor Tower account. No parameters needed.
+    `Check current API usage and remaining quota for your Sensor Tower account. No parameters required.
 
-Returns: calls made, calls remaining, quota limits, and plan details.
+Returns usage stats including calls made, remaining quota, and plan details.
 
-Use when: monitoring API consumption, checking if approaching limits, or debugging "quota exceeded" errors from other tools.`,
+Use when: monitoring API consumption, checking quota limits, debugging "quota exceeded" errors, or before running large batch operations.`,
     {},
     async () => {
       const data = await client.request(`/v1/api_usage`);
